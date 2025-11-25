@@ -1,0 +1,243 @@
+// Prisma Schema for Bible Study App
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER MANAGEMENT
+// ============================================
+
+model User {
+  id                   String         @id @default(cuid())
+  email                String         @unique
+  name                 String?
+  passwordHash         String?
+  preferredTranslation String         @default("ESV")
+  theme                String         @default("light") // light, dark
+  studyReminders       Boolean        @default(true)
+  reminderTime         String?        // "09:00" format
+  difficultyLevel      String         @default("intermediate") // beginner, intermediate, advanced
+
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  lastLoginAt          DateTime?
+
+  // Relations
+  verseStudies         VerseStudy[]
+  reviewSessions       ReviewSession[]
+  progress             UserProgress?
+  bookmarks            Bookmark[]
+
+  @@index([email])
+}
+
+// ============================================
+// VERSE STUDIES
+// ============================================
+
+model VerseStudy {
+  id              String    @id @default(cuid())
+  userId          String
+
+  // Verse identification
+  verseReference  String    // "John 3:16"
+  bookName        String
+  bookId          Int
+  chapter         Int
+  verseNumber     Int
+  verseText       String    @db.Text
+  translation     String
+
+  // User's initial understanding
+  userInterpretation String @db.Text
+  submittedAt        DateTime @default(now())
+
+  // AI Response (stored as JSON for flexibility)
+  aiFeedback         Json?    // {affirmed: string[], corrected: string[], gaps: string[]}
+
+  // Structured explanation (all 7 parts)
+  structuredExplanation Json? // {summary, paragraph, literaryContext, historicalContext, greekHebrewWords, theologicalMeaning, pastoralApplication}
+
+  // Quiz
+  quizQuestions      Json?    // Array of questions with options
+  quizAnswers        Json?    // User's answers
+  quizScore          Float?   // 0-100
+
+  // Status tracking
+  status             String   @default("in_progress") // in_progress, completed
+  completedAt        DateTime?
+  timeSpentSeconds   Int      @default(0)
+
+  // Review tracking
+  reviewedCount      Int      @default(0)
+  lastReviewedAt     DateTime?
+  nextReviewDate     DateTime?
+
+  // Relations
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewSessions     ReviewSession[]
+
+  @@index([userId, verseReference])
+  @@index([userId, completedAt])
+  @@index([userId, nextReviewDate])
+  @@index([bookName, chapter, verseNumber])
+}
+
+// ============================================
+// REVIEW SESSIONS
+// ============================================
+
+model ReviewSession {
+  id                  String     @id @default(cuid())
+  userId              String
+  verseStudyId        String
+
+  // User's new attempt
+  newInterpretation   String     @db.Text
+  submittedAt         DateTime   @default(now())
+
+  // Comparison result
+  comparisonResult    Json       // {improvements: string[], stillMissing: string[], retained: string[]}
+  improvementScore    Float?     // -1 to 1 scale (-1 = worse, 0 = same, 1 = much better)
+
+  // Relations
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verseStudy          VerseStudy @relation(fields: [verseStudyId], references: [id], onDelete: Cascade)
+
+  @@index([userId, submittedAt])
+  @@index([verseStudyId])
+}
+
+// ============================================
+// USER PROGRESS
+// ============================================
+
+model UserProgress {
+  id                   String    @id @default(cuid())
+  userId               String    @unique
+
+  // Overall stats
+  totalStudies         Int       @default(0)
+  totalReviews         Int       @default(0)
+  averageQuizScore     Float?
+  averageTimePerVerse  Int?      // seconds
+
+  // Streak tracking
+  currentStreak        Int       @default(0)
+  longestStreak        Int       @default(0)
+  lastStudyDate        DateTime?
+
+  // Verse coverage (stored as JSON for flexibility)
+  versesStudied        Json      @default("[]") // Array of verse references
+  booksStudied         Json      @default("{}") // Object: {bookName: count}
+
+  // Study patterns (time of day user typically studies)
+  studyPattern         Json?     // {hourCounts: {0-23: count}}
+
+  updatedAt            DateTime  @updatedAt
+
+  // Relations
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ============================================
+// BOOKMARKS
+// ============================================
+
+model Bookmark {
+  id              String    @id @default(cuid())
+  userId          String
+  verseReference  String
+  bookName        String
+  chapter         Int
+  verseNumber     Int
+  notes           String?   @db.Text
+  tags            String[]  // Array of custom tags
+
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, verseReference])
+  @@index([userId])
+}
+
+// ============================================
+// BIBLE DATA (CACHE)
+// ============================================
+
+model BibleBook {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  shortName   String    // "Gen", "John", etc.
+  testament   String    // "OT" or "NT"
+  bookOrder   Int       @unique
+  chapters    Int
+
+  verses      BibleVerse[]
+
+  @@index([testament, bookOrder])
+}
+
+model BibleVerse {
+  id           String     @id @default(cuid())
+  bookId       Int
+  chapter      Int
+  verseNumber  Int
+  translation  String
+  text         String     @db.Text
+
+  createdAt    DateTime   @default(now())
+
+  // Relations
+  book         BibleBook  @relation(fields: [bookId], references: [id])
+
+  @@unique([bookId, chapter, verseNumber, translation])
+  @@index([bookId, chapter, verseNumber])
+  @@index([translation])
+}
+
+// ============================================
+// SYSTEM / ADMIN
+// ============================================
+
+// For tracking AI usage and costs
+model AIUsageLog {
+  id              String    @id @default(cuid())
+  userId          String?
+  verseReference  String
+  operationType   String    // "analyze", "explain", "quiz", "review"
+  model           String    // "gpt-4", "claude-3", etc.
+  promptTokens    Int
+  completionTokens Int
+  totalTokens     Int
+  costUsd         Float?
+  responseTimeMs  Int?
+
+  createdAt       DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([operationType])
+  @@index([createdAt])
+}
+
+// For storing system-wide settings
+model SystemSetting {
+  id          String    @id @default(cuid())
+  key         String    @unique
+  value       String    @db.Text
+  description String?
+  updatedAt   DateTime  @updatedAt
+
+  @@index([key])
+}
